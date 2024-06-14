@@ -1,40 +1,66 @@
-import altair as alt
-import numpy as np
-import pandas as pd
+import time
 import streamlit as st
 
-"""
-# Welcome to Streamlit!
+from repochat.utils import init_session_state
+from repochat.git import git_form
+from repochat.db import vector_db, load_to_db
+from repochat.models import hf_embeddings, code_llama
+from repochat.chain import response_chain
 
-Edit `/streamlit_app.py` to customize this app to your heart's desire :heart:.
-If you have any questions, checkout our [documentation](https://docs.streamlit.io) and [community
-forums](https://discuss.streamlit.io).
+init_session_state()
 
-In the meantime, below is an example of what you can do with just a few lines of code:
-"""
+st.set_page_config(
+    page_title="RepoChat",
+    page_icon="💻",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'Report a bug': "https://github.com/pnkvalavala/repochat/issues",
+        'About': "No need to worry if you can't understand GitHub code or repositories anymore! Introducing RepoChat, where you can effortlessly chat and discuss all things related to GitHub repositories."
+    }
+)
 
-num_points = st.slider("Number of points in spiral", 1, 10000, 1100)
-num_turns = st.slider("Number of turns in spiral", 1, 300, 31)
+st.markdown(
+    "<h1 style='text-align: center;'>RepoChat</h1>",
+    unsafe_allow_html=True
+)
 
-indices = np.linspace(0, 1, num_points)
-theta = 2 * np.pi * num_turns * indices
-radius = indices
+try:
+    st.session_state["db_name"], st.session_state['git_form'] = git_form(st.session_state['repo_path'])
 
-x = radius * np.cos(theta)
-y = radius * np.sin(theta)
+    if st.session_state['git_form']:
+        with st.spinner('Loading the contents to database. This may take some time...'):
+            st.session_state["chroma_db"] = vector_db(
+                hf_embeddings(),
+                load_to_db(st.session_state['repo_path'])
+            )
+        with st.spinner('Loading model to memory'):
+            st.session_state["qa"] = response_chain( 
+                db=st.session_state["chroma_db"],
+                llm=code_llama()
+            )
 
-df = pd.DataFrame({
-    "x": x,
-    "y": y,
-    "idx": indices,
-    "rand": np.random.randn(num_points),
-})
+        st.session_state["db_loaded"] = True
+except TypeError:
+    pass
 
-st.altair_chart(alt.Chart(df, height=700, width=700)
-    .mark_point(filled=True)
-    .encode(
-        x=alt.X("x", axis=None),
-        y=alt.Y("y", axis=None),
-        color=alt.Color("idx", legend=None, scale=alt.Scale()),
-        size=alt.Size("rand", legend=None, scale=alt.Scale(range=[1, 150])),
-    ))
+if st.session_state["db_loaded"]:
+    for message in st.session_state["messages"]:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if prompt := st.chat_input("Enter your query"):
+        st.session_state["messages"].append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            message_placeholder = st.empty()
+            full_response = ""
+            with st.spinner("Generating response..."):
+                result = st.session_state["qa"](prompt)
+            for chunk in result['answer'].split():
+                full_response += chunk + " "
+                time.sleep(0.05)
+                message_placeholder.markdown(full_response + "▌")
+            message_placeholder.markdown(full_response)
+        st.session_state["messages"].append({"role": "assistant", "content": full_response})
